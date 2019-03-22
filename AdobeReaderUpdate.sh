@@ -17,13 +17,19 @@
 #   5 - Adobe Reader (DC) is running or was attempted to be installed manually and user deferred install
 #   6 - Not an Intel-based Mac
 #
+#
+###
+### Source: https://github.com/stevemillermac/adobereaderupdate/blob/master/AdobeReaderUpdate.sh
+###
+#
+#
 ####################################################################################################
 #
 # HISTORY
 #   Based on the threads:
 #   https://jamfnation.jamfsoftware.com/viewProductFile.html?id=42&fid=761
 #   https://jamfnation.jamfsoftware.com/discussion.html?id=12042
-#   Version: 1.6
+#   Version: 1.7 - Netopie 2018
 #
 #   - v.1.0 Joe Farage, 23.01.2015
 #   - v.1.1 Joe Farage, 08.04.2015 : support for new Adobe Acrobat Reader DC
@@ -32,6 +38,9 @@
 #   - v.1.4 Luis Lugo, 28.04.2016 : attempts an alternate download if the first one fails
 #	- v.1.5	Steve Miller, 15.12.2016 : Adobe checking if installed is greater than online, exit code updated
 #	- v.1.6	Steve Miller, 17.02.2017 : Fixed install when not installed, changed to touch command for log creation.
+#	- v.1.7 Netopie, 01.03.2018 : Use the latest update installer if Reader DC is already installed
+#								  Install the latest version if Reader DC is not installed
+#								  Option to remove current installation
 #
 ####################################################################################################
 # Script to download and install Adobe Reader DC.
@@ -39,6 +48,7 @@
 
 # Setting variables
 readerProcRunning=0
+currentUser=$(stat -f%Su /dev/console)
 
 # Echo function
 echoFunc () {
@@ -87,6 +97,7 @@ exitFunc () {
 
 # Check to see if Reader or Reader DC is running
 readerRunningCheck () {
+	sleep 10
     processNum=$(ps aux | grep "Adobe Acrobat Reader DC" | wc -l)
     if [ $processNum -gt 1 ]
     then
@@ -109,11 +120,12 @@ readerRunningCheck () {
 # If Adobe Reader is running, prompt the user to close it
 readerRunning () {
     echoFunc "Adobe Acrobat Reader (DC) appears to be running!"
-    hudTitle="Adobe Acrobat Reader DC Update"
-    hudDescription="Adobe Acrobat Reader needs to be updated. Please save your work and close the application to proceed. You can defer if needed.
-If you have any questions, please call the help desk."
+    hudTitle="Mise à jour Adobe Acrobat Reader DC"
+    hudDescription="Adobe Acrobat Reader doit être mis à jour, supprimé ou réinstallé. Veuillez quitter l'application et cliquer sur 'Continuer'. Cliquez sur 'Plus tard' pour effectuer cette opération ultérieurement.
+Contactez le support Netopie pour plus d'informations."
+	hudIcon="/Applications/Adobe Acrobat Reader DC.app/Contents/Resources/ACR_App.icns"
 
-    jamfHelperPrompt=`/Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "$hudTitle" -description "$hudDescription" -button1 "Proceed" -button2 "Defer" -defaultButton 1`
+    jamfHelperPrompt=`/Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "$hudTitle" -description "$hudDescription" -icon "$hudIcon" -button1 "Continuer" -button2 "Plus tard" -defaultButton 1`
 
     case $jamfHelperPrompt in
         0)
@@ -135,11 +147,12 @@ If you have any questions, please call the help desk."
 # Let the user know we're installing Adobe Acrobat Reader DC manually
 readerUpdateMan () {
     echoFunc "Letting the user know we're installing Adobe Acrobat Reader DC manually!"
-    hudTitle="Adobe Acrobat Reader DC Update"
-    hudDescription="Adobe Acrobat Reader needs to be updated. You will see a program downloading the installer. You can defer if needed.
-If you have any questions, please call the help desk."
+    hudTitle="Mise à jour Adobe Acrobat Reader DC"
+    hudDescription="Adobe Acrobat Reader doit être mis à jour, supprimé ou réinstallé. Veuillez cliquer sur 'Continuer' pour télécharger et installer l'application. Cliquez sur 'Plus tard' pour effectuer cette opération ultérieurement.
+Contactez le support Netopie pour plus d'informations."
+	hudIcon="/Applications/Adobe Acrobat Reader DC.app/Contents/Resources/ACR_App.icns"
 
-    jamfHelperPrompt=`/Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "$hudTitle" -description "$hudDescription" -button1 "Defer" -button2 "Proceed" -defaultButton 1 -timeout 60 -countdown`
+    jamfHelperPrompt=`/Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "$hudTitle" -description "$hudDescription" -icon "$hudIcon" -button1 "Plus tard" -button2 "Continuer" -defaultButton 1 -timeout 60 -countdown`
 
     case $jamfHelperPrompt in
         0)
@@ -157,8 +170,212 @@ If you have any questions, please call the help desk."
     esac
 }
 
+# Download and installation function
+installReader () {
+	echoFunc "Current Reader DC version: ${currentinstalledapp} ${currentinstalledver}"
+	echoFunc "Available Reader DC version: ${latestver} => ${ARCurrVersNormalized}"
+	echoFunc "Downloading newer version."
+	curl -s -o /tmp/${filename}.dmg ${url}
+	case $? in
+		0)
+			echoFunc "Checking if the file exists after downloading."
+			if [ -e "/tmp/${filename}.dmg" ]; then
+				readerFileSize=$(du -k "/tmp/${filename}.dmg" | cut -f 1)
+				echoFunc "Downloaded File Size: $readerFileSize kb"
+			else
+				echoFunc "File NOT downloaded!"
+				return 3
+			fi
+			echoFunc "Checking if Reader is running one last time before we install"
+			readerRunningCheck
+			echoFunc "Mounting installer disk image."
+			hdiutil attach /tmp/${filename}.dmg -nobrowse -quiet
+			echoFunc "Installing..."
+			installer -pkg /Volumes/${filename}/${filename}.pkg -target / > /dev/null
+
+			sleep 10
+			echoFunc "Unmounting installer disk image."
+			umount "/Volumes/${filename}"
+			sleep 10
+			echoFunc "Deleting disk image."
+			rm /tmp/${filename}.dmg
+
+			# double check to see if the new version got updated
+			if [ -e "/Applications/Adobe Acrobat Reader DC.app" ]; then
+				newlyinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Acrobat\ Reader\ DC.app/Contents/Info CFBundleShortVersionString`
+				if [ "${latestvernorm}" = "${newlyinstalledver}" ]; then
+					echoFunc "SUCCESS: Adobe Reader has been updated to version ${newlyinstalledver}"
+#					echoFunc "SUCCESS: Adobe Reader has been updated to version ${newlyinstalledver}, issuing JAMF recon command"
+#					jamf recon
+					if [ $readerProcRunning -eq 1 ];
+					then
+						hudTitle="Adobe Reader DC mis à jour"
+						hudDescription="Adobe Reader DC a été mis à jour en version ${newlyinstalledver}."
+						hudIcon="/Applications/Adobe Acrobat Reader DC.app/Contents/Resources/ACR_App.icns"
+						/Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "$hudTitle" -description "$hudDescription" -icon "$hudIcon" -button1 "OK" -defaultButton 1
+					fi
+						return 0
+				else
+                       return 4
+				fi
+			else
+				return 3
+			fi
+		;;
+		*)
+			echoFunc "Curl function failed on primary download! Error: $?. Review error codes here: https://curl.haxx.se/libcurl/c/libcurl-errors.html"
+			echoFunc "Attempting alternate download from https://admdownload.adobe.com/bin/live/AdobeReader_dc_en_a_install.dmg"
+			curl -s -o /tmp/AdobeReader_dc_en_a_install.dmg https://admdownload.adobe.com/bin/live/AdobeReader_dc_en_a_install.dmg
+			case $? in
+			0)
+				echoFunc "Checking if the file exists after downloading."
+				if [ -e "/tmp/AdobeReader_dc_en_a_install.dmg" ]; then
+					readerFileSize=$(du -k "/tmp/AdobeReader_dc_en_a_install.dmg" | cut -f 1)
+					echoFunc "Downloaded File Size: $readerFileSize kb"
+				else
+					echoFunc "File NOT downloaded!"
+					return 4
+				fi
+				echoFunc "Checking if Reader is running one last time before we install"
+				readerRunningCheck
+				echoFunc "Checking with the user if we should proceed"
+				readerUpdateMan
+				echoFunc "Mounting installer disk image."
+				hdiutil attach /tmp/AdobeReader_dc_en_a_install.dmg -nobrowse -quiet
+				echoFunc "Installing..."
+				/Volumes/Adobe\ Acrobat\ Reader\ DC\ Installer/Install\ Adobe\ Acrobat\ Reader\ DC.app/Contents/MacOS/Install\ Adobe\ Acrobat\ Reader\ DC
+				sleep 10
+				echoFunc "Unmounting installer disk image."
+				umount "/Volumes/Adobe Acrobat Reader DC Installer"
+				sleep 10
+				echoFunc "Deleting disk image."
+				rm /tmp/AdobeReader_dc_en_a_install.dmg
+
+				# double check to see if the new version got updated
+				if [ -e "/Applications/Adobe Acrobat Reader DC.app" ]; then
+				newlyinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Acrobat\ Reader\ DC.app/Contents/Info CFBundleShortVersionString`
+					if [ "${latestvernorm}" = "${newlyinstalledver}" ]; then
+						echoFunc "SUCCESS: Adobe Reader has been updated to version ${newlyinstalledver}"
+#						echoFunc "SUCCESS: Adobe Reader has been updated to version ${newlyinstalledver}, issuing JAMF recon command"
+#						jamf recon
+						return 0
+					else
+						return 4
+					fi
+				else
+					return 4
+				fi
+			;;
+			*)
+				echoFunc "Curl function failed on alternate download! Error: $?. Review error codes here: https://curl.haxx.se/libcurl/c/libcurl-errors.html"
+				return 4
+			;;
+		esac
+		;;
+	esac
+}
+
+# Uninstallation function
+removeReader () {
+	hudTitle="Suppression Adobe Acrobat Reader DC"
+    hudDescription="Adobe Acrobat Reader va être supprimé. Voulez-vous continuer ?
+Contactez le support Netopie pour plus d'informations."
+	hudIcon="/Applications/Adobe Acrobat Reader DC.app/Contents/Resources/ACR_App.icns"
+
+    jamfHelperPrompt=`/Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "$hudTitle" -description "$hudDescription" -icon "$hudIcon" -button1 "Oui" -button2 "Non" -defaultButton 1`
+
+    case $jamfHelperPrompt in
+        0)
+            echoFunc "Proceed selected"
+            readerRunningCheck
+        ;;
+        2)
+            echoFunc "Deferment Selected"
+            exitFunc 5
+        ;;
+        *)
+            echoFunc "Selection: $?"
+            exitFunc 3 "Unknown"
+        ;;
+    esac
+
+	IFS=","
+	launchAgent="com.adobe.ARMDCHelper.*.plist"
+	launchDaemons="com.adobe.ARMDC.Communicator.plist,\
+com.adobe.ARMDC.SMJobBlessHelper.plist"
+	readerApp="/Applications/Adobe Acrobat Reader DC.app"
+	readerRsc="/Library/Application Support/Adobe/ARMDC,\
+/Library/Application Support/Adobe/ARMNext,\
+/Library/Application Support/Adobe/HelpCfg,\
+/Library/Application Support/Adobe/Reader/DC,\
+/Library/Internet Plug-Ins/AdobePDFViewer.plugin,\
+/Library/Internet Plug-Ins/AdobePDFViewerNPAPI.plugin,\
+/Library/PrivilegedHelperTools/com.adobe.ARMDC.Communicator,\
+/Library/PrivilegedHelperTools/com.adobe.ARMDC.SMJobBlessHelper,\
+/Users/${currentUser}/Library/Application Support/Adobe/AcroCef,\
+/Users/${currentUser}/Library/Application Support/Adobe/Acrobat/DC,\
+/Users/${currentUser}/Library/Application Support/Adobe/Linguistics,\
+/Users/${currentUser}/Library/Application Support/CEF"
+	pkgRcpt="/private/var/db/receipts/com.adobe.RdrServicesUpdater.*,\
+/private/var/db/receipts/com.adobe.acrobat.AcroRdrDCUpd*,\
+/private/var/db/receipts/com.adobe.acrobat.DC.*,\
+/private/var/db/receipts/com.adobe.armdc.*"
+	userPrefs="/Users/${currentUser}/Library/Preferences/com.adobe.Acrobat-Customization-Wizard-DC.plist,\
+/Users/${currentUser}/Library/Preferences/com.adobe.AdobeRdrCEFHelper.plist,\
+/Users/${currentUser}/Library/Preferences/com.adobe.Reader.plist,\
+/Users/${currentUser}/Library/Preferences/com.adobe.com.adobe.acrobat.AcroPatchInstall.plist"
+
+	# Stop and remove daemons and agents
+	echoFunc "Stop and remove launchd agents"
+	sudo -u "${currentUser}" launchctl unload /Library/LaunchAgents/${launchAgent} 2>/dev/null
+	rm -f /Library/LaunchAgents/${launchAgent}
+	echoFunc "Stop and remove launchd daemons"
+	for i in ${launchDaemons}; do
+		launchctl unload /Library/LaunchDaemons/${i} 2>/dev/null
+		rm -f /Library/LaunchDaemons/${i}
+	done
+
+	# Remove application
+	echoFunc "Remove application"
+	rm -rf "${readerApp}"
+
+	# Remove ressources
+	echoFunc "Remove ressources"
+	for i in ${readerRsc}; do
+		rm -rf "${i}"
+	done
+
+	# Remove packages receipts
+	echoFunc "Remove packages receipts"
+	for i in ${pkgRcpt}; do
+		rm -rf "${i}"
+	done
+	
+	# Remove user preferences
+	if [ "${1}" = "fullremove" ]; then
+		echoFunc "Remove user preferences"
+		for i in ${userPrefs}; do
+			rm -rf "${i}"
+		done
+	fi
+}
+
 echoFunc ""
 echoFunc "======================== Starting Script ========================"
+
+# Uninstall Reader DC
+if [ "${1}" = "remove" ]; then
+	echoFunc "Execution using option ${1}: will remove application and components"
+	removeReader ${1}
+	exitFunc 3 "Reader DC removed"
+elif [ "${1}" = "fullremove" ]; then
+	echoFunc "Execution using option ${1}: will remove application, components and user preferences"
+	removeReader ${1}
+	exitFunc 3 "Reader DC removed"
+elif [ "${1}" = "reinstall" ]; then
+	echoFunc "Execution using option ${1}: will remove application and components, and will reinstall the latest version"
+	removeReader ${1}
+fi
 
 # Are we running on Intel?
 if [ '`/usr/bin/uname -p`'="i386" -o '`/usr/bin/uname -p`'="x86_64" ]; then
@@ -169,25 +386,29 @@ if [ '`/usr/bin/uname -p`'="i386" -o '`/usr/bin/uname -p`'="x86_64" ]; then
     userAgent="Mozilla/5.0 (Macintosh; Intel Mac OS X ${OSvers_URL}) AppleWebKit/535.6.2 (KHTML, like Gecko) Version/5.2 Safari/535.6.2"
 
     # Get the latest version of Reader available from Adobe's About Reader page.
-    latestver=``
-    while [ -z "$latestver" ]
+    latestverfull=``
+    latestverupd=``
+    while [ -z "$latestverfull" ] || [ -z "$latestverupd" ]
     do
-        latestver=`curl -s -L -A "$userAgent" https://get.adobe.com/reader/ | grep "<strong>Version" | /usr/bin/sed -e 's/<[^>][^>]*>//g' | /usr/bin/awk '{print $2}' | cut -c 3-14`
+        latestverfull=`curl -s -L -A "$userAgent" https://get.adobe.com/reader/ | grep "<strong>Version" | /usr/bin/sed -e 's/<[^>][^>]*>//g' | /usr/bin/awk '{print $2}' | cut -c 3-14`
+    	latestverupd=`curl -s http://armmf.adobe.com/arm-manifests/mac/AcrobatDC/reader/current_version.txt`
     done
 
-    echoFunc "Latest Adobe Reader DC Version is: $latestver"
-    latestvernorm=`echo ${latestver}`
+    echoFunc "Latest Adobe Reader DC Version is: $latestverfull (full installer)"
+    echoFunc "Latest Adobe Reader DC Version is: $latestverupd (update installer)"
+
     # Get the version number of the currently-installed Adobe Reader, if any.
     if [ -e "/Applications/Adobe Acrobat Reader DC.app" ]; then
         currentinstalledapp="Reader DC"
         currentinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Acrobat\ Reader\ DC.app/Contents/Info CFBundleShortVersionString`
         echoFunc "Current Reader DC installed version is: $currentinstalledver"
-        if [ "${latestvernorm}" \< "${currentinstalledver}" ] || [ "${latestvernorm}" = "${currentinstalledver}" ]; then
+        if [ "${latestverupd}" \< "${currentinstalledver}" ] || [ "${latestverupd}" = "${currentinstalledver}" ]; then
             exitFunc 0 "${currentinstalledapp} ${currentinstalledver}"
         else
             # Not running the latest DC version, check if Reader is running
             readerRunningCheck
         fi
+        latestvernorm=`echo ${latestverupd}`
     elif [ -e "/Applications/Adobe Reader.app" ]; then
         currentinstalledapp="Reader"
         currentinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Reader.app/Contents/Info CFBundleShortVersionString`
@@ -199,122 +420,67 @@ if [ '`/usr/bin/uname -p`'="i386" -o '`/usr/bin/uname -p`'="x86_64" ]; then
         else
             echoFunc "Adobe Reader doesn't appear to be running!"
         fi
+        latestvernorm=`echo ${latestverupd}`
     else
         currentinstalledapp="None"
         currentinstalledver="N/A"
         echoFunc "Adobe Reader (DC) Version is not installed, beginning install now..."
+        latestvernorm=`echo ${latestverfull}`
     fi
 
-    # Build URL and dmg file name
-    ARCurrVersNormalized=$( echo $latestver | sed -e 's/[.]//g' )
-    echoFunc "ARCurrVersNormalized: $ARCurrVersNormalized"
-    url1="http://ardownload.adobe.com/pub/adobe/reader/mac/AcrobatDC/${ARCurrVersNormalized}/AcroRdrDC_${ARCurrVersNormalized}_MUI.dmg"
-    url2=""
-    url=`echo "${url1}${url2}"`
-    echoFunc "Latest version of the URL is: $url"
-    dmgfile="AcroRdrDC_${ARCurrVersNormalized}_MUI.dmg"
+	# Build URL and dmg file name
+	if ([ -e "/Applications/Adobe Acrobat Reader DC.app" ] || [ -e "/Applications/Adobe Reader.app" ]) && [ ${latestverupd} != ${latestverfull} ]; then
+		ARCurrVersNormalized=$(echo $latestverupd | sed -e 's/[.]//g' )
+		echoFunc "ARCurrVersNormalized: $ARCurrVersNormalized (update installer)"
+		url1="http://ardownload.adobe.com/pub/adobe/reader/mac/AcrobatDC/${ARCurrVersNormalized}/AcroRdrDCUpd${ARCurrVersNormalized}_MUI.dmg"
+		url2=""
+		url=`echo "${url1}${url2}"`
+		echoFunc "Latest version of the URL is: $url (update installer)"
+		filename="AcroRdrDCUpd${ARCurrVersNormalized}_MUI"
+		latestver=`echo ${latestverupd}`
+	else
+		ARCurrVersNormalized=$(echo $latestverfull | sed -e 's/[.]//g' )
+		echoFunc "ARCurrVersNormalized: $ARCurrVersNormalized (full installer)"
+		url1="http://ardownload.adobe.com/pub/adobe/reader/mac/AcrobatDC/${ARCurrVersNormalized}/AcroRdrDC_${ARCurrVersNormalized}_MUI.dmg"
+		url2=""
+		url=`echo "${url1}${url2}"`
+		echoFunc "Latest version of the URL is: $url (full installer)"
+		filename="AcroRdrDC_${ARCurrVersNormalized}_MUI"
+		latestver=`echo ${latestverfull}`
+	fi
 
     # Compare the two versions, if they are different or Adobe Reader is not present then download and install the new version.
     if [ "${currentinstalledver}" != "${latestvernorm}" ]; then
-        echoFunc "Current Reader DC version: ${currentinstalledapp} ${currentinstalledver}"
-        echoFunc "Available Reader DC version: ${latestver} => ${ARCurrVersNormalized}"
-        echoFunc "Downloading newer version."
-        curl -s -o /tmp/${dmgfile} ${url}
-        case $? in
-            0)
-                echoFunc "Checking if the file exists after downloading."
-                if [ -e "/tmp/${dmgfile}" ]; then
-                    readerFileSize=$(du -k "/tmp/${dmgfile}" | cut -f 1)
-                    echoFunc "Downloaded File Size: $readerFileSize kb"
-                else
-                    echoFunc "File NOT downloaded!"
-                    exitFunc 3 "${currentinstalledapp} ${currentinstalledver}"
-                fi
-                echoFunc "Checking if Reader is running one last time before we install"
-                readerRunningCheck
-                echoFunc "Mounting installer disk image."
-                hdiutil attach /tmp/${dmgfile} -nobrowse -quiet
-                echoFunc "Installing..."
-                installer -pkg /Volumes/AcroRdrDC_${ARCurrVersNormalized}_MUI/AcroRdrDC_${ARCurrVersNormalized}_MUI.pkg -target / > /dev/null
-
-                sleep 10
-                echoFunc "Unmounting installer disk image."
-                umount "/Volumes/AcroRdrDC_${ARCurrVersNormalized}_MUI"
-                sleep 10
-                echoFunc "Deleting disk image."
-                rm /tmp/${dmgfile}
-
-                # double check to see if the new version got updated
-                if [ -e "/Applications/Adobe Acrobat Reader DC.app" ]; then
-                    newlyinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Acrobat\ Reader\ DC.app/Contents/Info CFBundleShortVersionString`
-                    if [ "${latestvernorm}" = "${newlyinstalledver}" ]; then
-                        echoFunc "SUCCESS: Adobe Reader has been updated to version ${newlyinstalledver}, issuing JAMF recon command"
-                        jamf recon
-                        if [ $readerProcRunning -eq 1 ];
-                        then
-                            /Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType hud -lockHUD -title "Adobe Reader DC Updated" -description "Adobe Reader DC has been updated to version ${newlyinstalledver}." -button1 "OK" -defaultButton 1
-                        fi
-                        exitFunc 0 "${newlyinstalledver}"
-                    else
-                        exitFunc 4 "${currentinstalledapp} ${currentinstalledver}"
-                    fi
-                else
-                    exitFunc 3 "${currentinstalledapp} ${currentinstalledver}"
-                fi
-            ;;
-            *)
-                echoFunc "Curl function failed on primary download! Error: $?. Review error codes here: https://curl.haxx.se/libcurl/c/libcurl-errors.html"
-                echoFunc "Attempting alternate download from https://admdownload.adobe.com/bin/live/AdobeReader_dc_en_a_install.dmg"
-                curl -s -o /tmp/AdobeReader_dc_en_a_install.dmg https://admdownload.adobe.com/bin/live/AdobeReader_dc_en_a_install.dmg
-                case $? in
-                    0)
-                        echoFunc "Checking if the file exists after downloading."
-                        if [ -e "/tmp/AdobeReader_dc_en_a_install.dmg" ]; then
-                            readerFileSize=$(du -k "/tmp/AdobeReader_dc_en_a_install.dmg" | cut -f 1)
-                            echoFunc "Downloaded File Size: $readerFileSize kb"
-                        else
-                            echoFunc "File NOT downloaded!"
-                            exitFunc 4 "${currentinstalledapp} ${currentinstalledver}"
-                        fi
-                        echoFunc "Checking if Reader is running one last time before we install"
-                        readerRunningCheck
-                        echoFunc "Checking with the user if we should proceed"
-                        readerUpdateMan
-                        echoFunc "Mounting installer disk image."
-                        hdiutil attach /tmp/AdobeReader_dc_en_a_install.dmg -nobrowse -quiet
-                        echoFunc "Installing..."
-                        /Volumes/Adobe\ Acrobat\ Reader\ DC\ Installer/Install\ Adobe\ Acrobat\ Reader\ DC.app/Contents/MacOS/Install\ Adobe\ Acrobat\ Reader\ DC
-                        sleep 10
-                        echoFunc "Unmounting installer disk image."
-                        umount "/Volumes/Adobe Acrobat Reader DC Installer"
-                        sleep 10
-                        echoFunc "Deleting disk image."
-                        rm /tmp/AdobeReader_dc_en_a_install.dmg
-
-                        # double check to see if the new version got updated
-                        if [ -e "/Applications/Adobe Acrobat Reader DC.app" ]; then
-                            newlyinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Acrobat\ Reader\ DC.app/Contents/Info CFBundleShortVersionString`
-                            if [ "${latestvernorm}" = "${newlyinstalledver}" ]; then
-                                echoFunc "SUCCESS: Adobe Reader has been updated to version ${newlyinstalledver}, issuing JAMF recon command"
-                                jamf recon
-                                exitFunc 0 "${newlyinstalledver}"
-                            else
-                                exitFunc 4 "${currentinstalledapp} ${currentinstalledver}"
-                            fi
-                        else
-                            exitFunc 4 "${currentinstalledapp} ${currentinstalledver}"
-                        fi
-                    ;;
-                    *)
-                        echoFunc "Curl function failed on alternate download! Error: $?. Review error codes here: https://curl.haxx.se/libcurl/c/libcurl-errors.html"
-                        exitFunc 4 "${currentinstalledapp} ${currentinstalledver}"
-                    ;;
-                esac
-            ;;
-        esac
+		installReader
+		returnvalue=$?
+		if [ ${returnvalue} == 0 ]; then
+			if [ ${latestverupd} != ${newlyinstalledver} ]; then
+		        currentinstalledapp="Reader DC"
+        		currentinstalledver=`/usr/bin/defaults read /Applications/Adobe\ Acrobat\ Reader\ DC.app/Contents/Info CFBundleShortVersionString`
+        		latestvernorm=`echo ${latestverupd}`
+				ARCurrVersNormalized=$(echo $latestverupd | sed -e 's/[.]//g' )
+				echoFunc "ARCurrVersNormalized: $ARCurrVersNormalized (update installer)"
+				url1="http://ardownload.adobe.com/pub/adobe/reader/mac/AcrobatDC/${ARCurrVersNormalized}/AcroRdrDCUpd${ARCurrVersNormalized}_MUI.dmg"
+				url2=""
+				url=`echo "${url1}${url2}"`
+				echoFunc "Latest version of the URL is: $url (update installer)"
+				filename="AcroRdrDCUpd${ARCurrVersNormalized}_MUI"
+				latestver=`echo ${latestverupd}`
+				installReader
+				returnvalue=$?
+				if [ ${returnvalue} == 0 ]; then
+					exitFunc "${returnvalue}" "${newlyinstalledver}"
+				else
+					exitFunc "${returnvalue}" "${currentinstalledapp} ${currentinstalledver}"
+				fi
+			fi
+			exitFunc "${returnvalue}" "${newlyinstalledver}"
+		else
+			exitFunc "${returnvalue}" "${currentinstalledapp} ${currentinstalledver}"
+		fi
     else
         # If Adobe Reader DC is up to date already, just log it and exit.
-        exitFunc 0 "${currentinstalledapp} ${currentinstalledver}"
+        exitFunc 0 "${currentinstalledapp}" "${currentinstalledver}"
     fi
 else
     # This script is for Intel Macs only.
